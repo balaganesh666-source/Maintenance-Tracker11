@@ -1,0 +1,62 @@
+name: Android build
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - name: Generate Android platform folder (first run only)
+        run: |
+          if [ ! -d android ]; then
+            flutter create --platforms=android --org com.nivaro --project-name nivaro .
+          fi
+          python3 tool/patch_android.py
+          rm -f test/widget_test.dart
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nivaro-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+  # Signed release bundle. Needs these repository secrets:
+  # KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: |
+          flutter create --platforms=android --org com.nivaro --project-name nivaro .
+          python3 tool/patch_android.py
+          python3 tool/patch_signing.py
+          rm -f test/widget_test.dart
+      - name: Restore keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload.jks
+          cat > android/key.properties <<EOT
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=upload.jks
+          EOT
+      - run: flutter pub get
+      - run: flutter build appbundle --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nivaro-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
